@@ -1,3 +1,3 @@
 # simple-jpeg
 
-A simple jpeg encoder and decoder that can handle practical JPEG images.
+A simple JPEG encoder and decoder that can handle practical JPEG images.
