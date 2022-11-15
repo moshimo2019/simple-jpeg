@@ -1,6 +1,7 @@
 import numpy as np
 import math
 import cv2
+from io import BytesIO
 
 
 # DCT block size
@@ -95,34 +96,13 @@ class BitStreamWriter:
         return ' '.join(f'{b:2x}' for b in bytes_)
 
 
-class BytesWriter(bytearray):
+class BytesWriter(BytesIO):
 
     def __init__(self, *args, **kwargs):
         super(BytesWriter, self).__init__(*args, **kwargs)
 
     def add_bytes(self, *args):
-        self.extend(b''.join(args))
-
-
-class BytesReader:
-
-    def __init__(self, bytes_):
-        self.bytes_ = bytes_
-        self.length = len(bytes_)
-        self.cur = 0
-
-    def fetch(self, num):
-        if self.cur + num > self.length:
-            raise IndexError('IndexError: list index out of range')
-        self.cur += num
-        return self.bytes_[self.cur-num:self.cur]
-
-    def fetch_all(self):
-        cur, self.cur = self.cur, self.length
-        return self.bytes_[cur:]
-
-    def multi_fetch(self, *args):
-        return (self.fetch(num) for num in args)
+        self.write(b''.join(args))
 
 
 def bytes2int(bytes_, byteorder='big'):
@@ -183,7 +163,7 @@ def load_quantization_table(quality, component):
             f"component should be either 'lum' or 'chr', "
             f"but '{component}' was found."))
     if 0 < quality < 50:
-        q = np.floor(50/quality * q + 0.5)
+        q = np.minimum(np.floor(50/quality * q + 0.5), 255)
     elif 50 <= quality <= 100:
         q = np.maximum(np.floor((2 - quality/50) * q + 0.5), 1)
     else:

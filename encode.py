@@ -1,6 +1,8 @@
 from math import ceil
 import cv2
 import numpy as np
+from PIL import Image
+from pathlib import Path
 
 from utils import *
 from huffman import *
@@ -17,8 +19,8 @@ def padding(im, mh, mw):
     hh, ww = ceil(h / mh) * mh, ceil(w / mw) * mw
     im_ex = np.zeros_like(im, shape=(hh, ww, d))
     im_ex[:h, :w] = im
-    im_ex[:, w:] = im_ex[:, w-1:w]
-    im_ex[h:, :] = im_ex[h-1:h, :]
+    im_ex[:, w:] = im_ex[:, w - 1:w]
+    im_ex[h:, :] = im_ex[h - 1:h, :]
     return im_ex
 
 
@@ -37,7 +39,7 @@ def scan_blocks(mcu, mh, mw):
     | 2 | 3 | | | 6 | 7 |
     --------- | ---------
     """
-    blocks = mcu.reshape(-1, mh//BH, BH, mw//BW, BW).swapaxes(2, 3).reshape(
+    blocks = mcu.reshape(-1, mh // BH, BH, mw // BW, BW).swapaxes(2, 3).reshape(
         -1, BH, BW)
     return blocks
 
@@ -206,7 +208,7 @@ def encode_jpeg(im, quality=95, subsample='4:2:0', use_rm_ht=True):
 
     if depth == 3:
         # chroma subsample
-        ch = im[::mh//BH, ::mw//BW, 1:]
+        ch = im[::mh // BH, ::mw // BW, 1:]
         Cb = divide_blocks(ch[:, :, 0], BH, BW)
         Cr = divide_blocks(ch[:, :, 1], BH, BW)
         Cb_dct, Cr_dct = DCT(Cb), DCT(Cr)
@@ -230,22 +232,20 @@ def encode_jpeg(im, quality=95, subsample='4:2:0', use_rm_ht=True):
 
     writer = encode_header(qts, hts, cop_infos, height, width)
     bytes_ = encode_mcu(mcu_, mcu_hts)
-    writer.add_bytes(bytes_.replace(b'\xff', b'\xff\x00'))
-    writer.add_bytes(MARKER.EOI)
-    return writer
+    writer.write(bytes_.replace(b'\xff', b'\xff\x00'))
+    writer.write(MARKER.EOI)
+    return writer.getvalue()
 
 
 def write_jpeg(filename, im, quality=95, subsample='4:2:0', use_rm_ht=True):
     bytes_ = encode_jpeg(im, quality, subsample, use_rm_ht)
-    with open(filename, 'wb') as f:
-        f.write(bytes_)
+    Path(filename).write_bytes(bytes_)
 
 
 def main():
-    im = cv2.imread('image/color.bmp', -1)
-    im_ = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
-    write_jpeg('image/color.jpg', im_, 95, '4:2:0')
-    cv2.imwrite('image/color-cv.jpg', im)
+    im = Image.open('image/color.bmp')
+    write_jpeg('image/color.jpg', np.array(im), 95, '4:2:0')
+    im.save('image/color-pillow.jpg', subsampling='4:2:0', quality=95)
 
 
 if __name__ == '__main__':

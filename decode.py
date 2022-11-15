@@ -2,57 +2,60 @@ from collections import OrderedDict
 import numpy as np
 from math import ceil
 import cv2
+from io import BytesIO
+from pathlib import Path
+from PIL import Image
 
 from utils import *
 from huffman import *
 
 
-def decode_header(reader: BytesReader):
-    fetch = reader.fetch
-    assert fetch(2) == MARKER.SOI  # Start of Image
-    marker = fetch(2)
+def decode_header(reader: BytesIO):
+    read = reader.read
+    assert read(2) == MARKER.SOI  # Start of Image
+    marker = read(2)
     if marker == MARKER.APP0:  # Application Marker 0
         APP0 = dict(
-            length=fetch(2),
-            identifier=fetch(5),
-            version=fetch(2),  # b'\x01\x01'
-            unit=fetch(1),
-            x_density=fetch(2),
-            y_density=fetch(2),
+            length=read(2),
+            identifier=read(5),
+            version=read(2),  # b'\x01\x01'
+            unit=read(1),
+            x_density=read(2),
+            y_density=read(2),
         )
-        APP0['thumbnail-data'] = fetch(bytes2int(APP0['length']) - 14)
-        marker = fetch(2)
+        APP0['thumbnail-data'] = read(bytes2int(APP0['length']) - 14)
+        marker = read(2)
 
     APPns = []
     while MARKER.APPn[0] <= marker <= MARKER.APPn[1]:  # Application Marker n
-        APPn = dict(marker=marker, length=fetch(2))
+        APPn = dict(marker=marker, length=read(2))
         APPns.append(APPn)
-        APPn['content'] = fetch(bytes2int(APPn['length']) - 2)
-        marker = fetch(2)
+        APPn['content'] = read(bytes2int(APPn['length']) - 2)
+        marker = read(2)
 
     qts = {}
     while marker == MARKER.DQT:  # Define Quantization Table
-        length, byte = bytes2int(fetch(2)), fetch(1)[0]
+        length, byte = bytes2int(read(2)), read(1)[0]
         precision, id_ = byte >> 4, byte & 0b1111
         assert precision == 0, 'only support uint8'
         table_size = (precision + 1) * 64
         assert length == table_size + 3
         dtype = np.uint8 if precision == 0 else np.uint16
         qts[id_] = np.frombuffer(
-            fetch(table_size), dtype=dtype, count=64).astype(np.int32)
-        marker = fetch(2)
+            read(table_size), dtype=dtype, count=64).astype(np.int32)
+        marker = read(2)
 
     assert marker == MARKER.SOF0  # Start of Frame
-    length = bytes2int(fetch(2))
-    precision = fetch(1)[0]
+    length = bytes2int(read(2))
+    precision = read(1)[0]
     assert precision == 8, 'only support 8'
-    height, width = bytes2int(fetch(2)), bytes2int(fetch(2))
-    cop_num = fetch(1)[0]  # 1: grayscale; 3: YCrCb;
+    height, width = bytes2int(read(2)), bytes2int(read(2))
+    cop_num = read(1)[0]  # 1: grayscale; 3: YCrCb;
     assert cop_num in (1, 3), 'only support grayscale and RGB images'
-    components_name = ['Y', 'Cr', 'Cb']
+    # components_name: ['Y', 'Cr', 'Cb']
     cop_infos = {}
     for i in range(cop_num):
-        cop_id, ratio, qt_id = fetch(3)  # cop_id: 1, 2, 3; qt_id: 0, 1
+        cop_id, ratio, qt_id = read(3)  # cop_id: 1, 2, 3; qt_id: 0, 1
         horizontal_ratio, vertical_ratio = ratio >> 4, ratio & 15
         cop_infos[cop_id] = ComponentInfo(
             id_=cop_id,
@@ -63,38 +66,38 @@ def decode_header(reader: BytesReader):
             ac_ht_id=None,
         )
 
-    marker = fetch(2)
+    marker = read(2)
     hts = {}  # (type, id): table
     # type 0: DC, 1: AC
     # Huffman table id: 0, 1
     while marker == MARKER.DHT:  # Define Huffman Table
-        length, byte = bytes2int(fetch(2)), fetch(1)[0]
+        length, byte = bytes2int(read(2)), read(1)[0]
         type_, id_ = byte >> 4, byte & 0b1111
-        count = np.frombuffer(fetch(16), dtype=np.uint8, count=16)
+        count = np.frombuffer(read(16), dtype=np.uint8, count=16)
         total = count.sum()
-        weigh = np.frombuffer(fetch(total), dtype=np.uint8, count=total)
+        weigh = np.frombuffer(read(total), dtype=np.uint8, count=total)
         assert length == 19 + total
         hts[type_, id_] = canonical_huffman_table(count, weigh)
-        marker = fetch(2)
+        marker = read(2)
 
     DRI = None
     if marker == MARKER.DRI:  # Define Restart Interval
-        DRI = dict(marker=marker, length=bytes2int(fetch(2)))
-        DRI['content'] = fetch(length - 2)
-        marker = fetch(2)
+        DRI = dict(marker=marker, length=bytes2int(read(2)))
+        DRI['content'] = read(length - 2)
+        marker = read(2)
     assert DRI is None, 'not support DRI yet'
 
     assert marker == MARKER.SOS
-    length = bytes2int(fetch(2))
-    assert fetch(1)[0] == cop_num
+    length = bytes2int(read(2))
+    assert read(1)[0] == cop_num
     for i in range(cop_num):
-        cop_id, ht_id = fetch(2)
+        cop_id, ht_id = read(2)
         # ht_id: (dc_ht_id, ac_ht_id)
         cop_infos[cop_id].dc_ht_id = ht_id >> 4
         cop_infos[cop_id].ac_ht_id = ht_id & 0b1111
     # cop_id: 1 Y, 2 Cb, 3 Cr
     cop_infos = [cop_infos[i + 1] for i in range(cop_num)]
-    assert fetch(3) == b'\x00\x3f\x00'
+    assert read(3) == b'\x00\x3f\x00'
     return qts, hts, cop_infos, height, width
 
 
@@ -166,13 +169,12 @@ def iDCT(dct):
 
 def decode_jpeg(reader):
     qts, hts, cop_infos, height, width = decode_header(reader)
-    remains = reader.fetch_all()
+    remains = reader.read()
     data, marker = remains[:-2].replace(b'\xff\x00', b'\xff'), remains[-2:]
     bit_stream = BitStreamReader(data)
     assert marker == MARKER.EOI
 
     # for blocks in MCU, choose the corresponding huffman tables to decode
-    cop0 = cop_infos[0]  # info of Y
     mcu_hts = []
     for cop in cop_infos:
         for _ in range(cop.horizontal * cop.vertical):
@@ -228,15 +230,13 @@ def decode_jpeg(reader):
 
 
 def read_jpeg(filename):
-    with open(filename, 'rb') as f:
-        reader = BytesReader(f.read())
+    reader = BytesIO(Path(filename).read_bytes())
     return decode_jpeg(reader)
 
 
 def main():
     im = read_jpeg('image/color.jpg')
-    im = cv2.cvtColor(im, cv2.COLOR_RGB2BGR)
-    cv2.imwrite(f'image/color-decode.bmp', im)
+    Image.fromarray(im).save('image/color-decode.bmp')
 
 
 if __name__ == '__main__':
